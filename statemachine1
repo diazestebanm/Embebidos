@@ -2,15 +2,13 @@
 #include <AsyncTaskLib.h>
 #include <DHT.h>
 
-// ======= Pines / DHT =======
-const uint8_t DHT_PIN = 2;    // DHT11 en digital 2
-const uint8_t LDR_PIN = A0;   // LDR en A0 (Mega)
+// ======= Pines =======
+const uint8_t DHT_PIN = 2;    // DHT11
+const uint8_t LDR_PIN = A0;   // LDR
+const uint8_t LED_PIN = 13;   // LED para alarma
+
 #define DHTTYPE DHT11
 DHT dht(DHT_PIN, DHTTYPE);
-
-// ======= Pines LED reales (añadidos, mínimos) =======
-const uint8_t LED_AZUL = 8;   // Alerta
-const uint8_t LED_ROJO = 9;   // Alarma
 
 // ======= Estados e Inputs =======
 enum State
@@ -36,25 +34,23 @@ enum Input
 StateMachine stateMachine(5, 9);
 Input input = Input::Unknown;
 
-// ======= Variables para condiciones (mínimo añadido) =======
-float currentTemp = NAN;   // se limpiará al entrar a Monitoreo_th
-int currentLuz = -1;       // -1 indica "vacío" (sin lectura válida aún)
+// ======= Variables =======
+float currentTemp = NAN;
+int currentLuz = -1;
 
-// ======= Timeouts originales (cada uno dispara Sign_Timeout) =======
+// ======= Timeouts =======
 AsyncTask timeoutInicio(5000, false, []() { input = Input::Sign_Timeout; });
 AsyncTask timeoutMonThToLuz(7000, false, []() { input = Input::Sign_Timeout; });
 AsyncTask timeoutAlertaToMonTh(4000, false, []() { input = Input::Sign_Timeout; });
 AsyncTask timeoutMonLuzToTh(2000, false, []() { input = Input::Sign_Timeout; });
 AsyncTask timeoutAlarmaToLuz(5000, false, []() { input = Input::Sign_Timeout; });
 
-// ======= Tareas de lectura (AsyncTask, no otra API) =======
+// ======= Tareas =======
 AsyncTask readDHTTask(2000, false, []() {
     float h = dht.readHumidity();
     float t = dht.readTemperature();
-    // actualizar variable necesaria para la nueva condición
     currentTemp = t;
     if (isnan(h) || isnan(t)) {
-        // Mostrar estado y nota corta si falla
         Serial.println("Estado: Monitoreo_th | Temp: N/A | Hum: N/A");
     } else {
         Serial.print("Estado: Monitoreo_th | Temp: ");
@@ -66,126 +62,79 @@ AsyncTask readDHTTask(2000, false, []() {
 });
 
 AsyncTask readLDRTask(500, false, []() {
-    int val = analogRead(LDR_PIN); // 0..1023 en Mega
-    // actualizar variable necesaria para la nueva condición
+    int val = analogRead(LDR_PIN);
     currentLuz = val;
     Serial.print("Estado: Monitoreo_luz | Luz: ");
     Serial.println(val);
 });
 
-// ======= Tareas para LEDs REALES (reemplazan las impresiones por Serial) =======
-// Alerta: Azul ON 100ms / OFF 300ms
-bool alertaLedOn = false;
-AsyncTask alertaLedTask(100, false, []() {
-    if (alertaLedOn) {
-        // Apagar LED azul
-        digitalWrite(LED_AZUL, LOW);
-        alertaLedOn = false;
-        alertaLedTask.SetIntervalMillis(300); // OFF 300ms
+// === LED parpadeo para Alarma ===
+AsyncTask blinkLedTask(200, true, []() {
+    static bool ledState = false;
+    digitalWrite(LED_PIN, ledState);
+    ledState = !ledState;
+
+    // Cambiar el intervalo según estado ON/OFF
+    if (ledState) {
+        blinkLedTask.SetIntervalMillis(200); // Encendido 200ms
     } else {
-        // Encender LED azul
-        digitalWrite(LED_AZUL, HIGH);
-        alertaLedOn = true;
-        alertaLedTask.SetIntervalMillis(100); // ON 100ms
+        blinkLedTask.SetIntervalMillis(400); // Apagado 400ms
     }
 });
 
-// Alarma: Rojo ON 200ms / OFF 400ms
-bool alarmaLedOn = false;
-AsyncTask alarmaLedTask(200, false, []() {
-    if (alarmaLedOn) {
-        // Apagar LED rojo
-        digitalWrite(LED_ROJO, LOW);
-        alarmaLedOn = false;
-        alarmaLedTask.SetIntervalMillis(400); // OFF 400ms
-    } else {
-        // Encender LED rojo
-        digitalWrite(LED_ROJO, HIGH);
-        alarmaLedOn = true;
-        alarmaLedTask.SetIntervalMillis(200); // ON 200ms
-    }
-});
-
-// ======= Helper para configurar timeouts (misma técnica que antes) =======
+// ======= Helper =======
 void setTimeout(AsyncTask& task, unsigned long interval) {
     task.SetIntervalMillis(interval);
     task.Reset();
     task.Start();
 }
 
-// ======= Setup de la máquina de estados (con las dos transiciones modificadas) =======
+// ======= Máquina =======
 void setupStateMachine()
 {
-    // Transiciones (idénticas salvo las dos condiciones requeridas)
+    // Transiciones
     stateMachine.AddTransition(Inicio, Monitoreo_th, []() { return input == Input::Sign_Timeout; });
     stateMachine.AddTransition(Monitoreo_th, Monitoreo_luz, []() { return input == Input::Sign_Timeout; });
-
-    // REEMPLAZADA: antes era input == Input::H
     stateMachine.AddTransition(Monitoreo_th, Alerta, []() { return (isnan(currentTemp) ? false : (currentTemp > 27.0)); });
-
     stateMachine.AddTransition(Alerta, Monitoreo_th, []() { return input == Input::Sign_Timeout; });
     stateMachine.AddTransition(Alerta, Inicio, []() { return input == Input::A; });
     stateMachine.AddTransition(Monitoreo_luz, Monitoreo_th, []() { return input == Input::Sign_Timeout; });
-
-    // REEMPLAZADA: antes era input == Input::L
-    // ahora exige que currentLuz tenga lectura válida (>=0) y supere 512
     stateMachine.AddTransition(Monitoreo_luz, Alarma, []() { return (currentLuz >= 0 && currentLuz > 512); });
-
     stateMachine.AddTransition(Alarma, Monitoreo_luz, []() { return input == Input::Sign_Timeout; });
     stateMachine.AddTransition(Alarma, Inicio, []() { return input == Input::B; });
 
-    // On Enter (arrancamos las tareas correspondientes y configuramos timeouts)
+    // On Enter
     stateMachine.SetOnEntering(Inicio, []() {
         Serial.println("Estado: Inicio");
         setTimeout(timeoutInicio, 5000);
     });
 
     stateMachine.SetOnEntering(Monitoreo_th, []() {
-        // limpiar temp antiguo para que no dispare inmediatamente al volver
         currentTemp = NAN;
-
-        // Mensaje corto al entrar; las lecturas las imprime la tarea periódica
         Serial.println("Estado: Monitoreo_th");
         setTimeout(timeoutMonThToLuz, 7000);
-
-        readDHTTask.SetIntervalMillis(2000);
-        readDHTTask.Reset();
         readDHTTask.Start();
     });
 
     stateMachine.SetOnEntering(Alerta, []() {
         Serial.println("Estado: Alerta");
         setTimeout(timeoutAlertaToMonTh, 4000);
-
-        alertaLedOn = false;
-        alertaLedTask.SetIntervalMillis(100);
-        alertaLedTask.Reset();
-        alertaLedTask.Start();
     });
 
     stateMachine.SetOnEntering(Monitoreo_luz, []() {
-        // limpiar lectura antigua para que no dispare inmediatamente al volver
         currentLuz = -1;
-
         Serial.println("Estado: Monitoreo_luz");
         setTimeout(timeoutMonLuzToTh, 2000);
-
-        readLDRTask.SetIntervalMillis(500);
-        readLDRTask.Reset();
         readLDRTask.Start();
     });
 
     stateMachine.SetOnEntering(Alarma, []() {
         Serial.println("Estado: Alarma");
         setTimeout(timeoutAlarmaToLuz, 5000);
-
-        alarmaLedOn = false;
-        alarmaLedTask.SetIntervalMillis(200);
-        alarmaLedTask.Reset();
-        alarmaLedTask.Start();
+        blinkLedTask.Start(); // 🔴 Iniciar parpadeo LED
     });
 
-    // On Leaving (detenemos las tareas correspondientes y reseteamos input)
+    // On Leaving
     stateMachine.SetOnLeaving(Inicio, []() {
         input = Input::Unknown;
         timeoutInicio.Stop();
@@ -200,8 +149,6 @@ void setupStateMachine()
     stateMachine.SetOnLeaving(Alerta, []() {
         input = Input::Unknown;
         timeoutAlertaToMonTh.Stop();
-        alertaLedTask.Stop();
-        digitalWrite(LED_AZUL, LOW); // apagar al salir
     });
 
     stateMachine.SetOnLeaving(Monitoreo_luz, []() {
@@ -213,8 +160,8 @@ void setupStateMachine()
     stateMachine.SetOnLeaving(Alarma, []() {
         input = Input::Unknown;
         timeoutAlarmaToLuz.Stop();
-        alarmaLedTask.Stop();
-        digitalWrite(LED_ROJO, LOW); // apagar al salir
+        blinkLedTask.Stop();      // 🔴 Detener parpadeo
+        digitalWrite(LED_PIN, LOW); // Apagar LED al salir
     });
 }
 
@@ -222,14 +169,8 @@ void setupStateMachine()
 void setup()
 {
     Serial.begin(9600);
+    pinMode(LED_PIN, OUTPUT); // Configurar LED
     dht.begin();
-
-    // configurar pines LED (solo esto es nuevo)
-    pinMode(LED_AZUL, OUTPUT);
-    pinMode(LED_ROJO, OUTPUT);
-    digitalWrite(LED_AZUL, LOW);
-    digitalWrite(LED_ROJO, LOW);
-
     setupStateMachine();
     stateMachine.SetState(Inicio, false, true);
 }
@@ -243,13 +184,12 @@ void loop()
     timeoutMonLuzToTh.Update();
     timeoutAlarmaToLuz.Update();
 
-    // Actualizar tareas sensores y LEDs
+    // Actualizar tareas
     readDHTTask.Update();
     readLDRTask.Update();
-    alertaLedTask.Update();
-    alarmaLedTask.Update();
+    blinkLedTask.Update(); // 🔴 Actualizar parpadeo
 
-    // Leer entrada del usuario (si no hay señal activa)
+    // Leer entrada
     if (input == Input::Unknown) {
         input = static_cast<Input>(readInput());
     }
@@ -258,7 +198,7 @@ void loop()
     stateMachine.Update();
 }
 
-// ======= Lectura serial de comandos =======
+// ======= Lectura serial =======
 int readInput()
 {
     if (Serial.available())
