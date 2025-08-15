@@ -39,6 +39,7 @@ AsyncTask timeoutAlarmaToLuz(5000, false, []() { input = Input::Sign_Timeout; })
 void setTimeout(AsyncTask& task, unsigned long interval) {
     task.SetIntervalMillis(interval);
     task.Reset();
+    task.Start(); // <-- ARRANCAR la tarea después de configurar/resetear
 }
 
 // Setup the State Machine
