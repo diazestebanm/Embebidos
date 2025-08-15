@@ -1,4 +1,5 @@
 #include "StateMachineLib.h"
+#include <AsyncTaskLib.h> // Asegúrate de incluir la librería AsyncTask
 
 // State Alias
 enum State
@@ -18,136 +19,206 @@ enum Input
     A = 2,
     L = 3,
     B = 4,
-    Unknown = 5
+    Sign_Timeout = 5,   // Nueva señal de timeout
+    Unknown = 6
 };
 
 // Create new StateMachine
 StateMachine stateMachine(5, 9);
 
 // Stores last user input
-Input input;
+Input input = Input::Unknown;
+
+// Tareas de timeout (una por cada transición basada en tiempo)
+AsyncTask timeoutInicio(5000, false, []() { input = Input::Sign_Timeout; });
+AsyncTask timeoutMonThToLuz(7000, false, []() { input = Input::Sign_Timeout; });
+AsyncTask timeoutAlertaToMonTh(4000, false, []() { input = Input::Sign_Timeout; });
+AsyncTask timeoutMonLuzToTh(2000, false, []() { input = Input::Sign_Timeout; });
+AsyncTask timeoutAlarmaToLuz(5000, false, []() { input = Input::Sign_Timeout; });
+
+// Configuración de timeouts
+void setTimeout(AsyncTask& task, unsigned long interval) {
+    task.SetIntervalMillis(interval);
+    task.Reset();
+}
 
 // Setup the State Machine
 void setupStateMachine()
 {
-    // Add transitions
-    // From Inicio
-    stateMachine.AddTransition(Inicio, Monitoreo_th, []() { return input == T; });
+    // Transiciones
+    // Inicio -> Monitoreo_th (por timeout)
+    stateMachine.AddTransition(Inicio, Monitoreo_th, []() { 
+        return input == Input::Sign_Timeout; 
+    });
     
-    // From Monitoreo_th
-    stateMachine.AddTransition(Monitoreo_th, Monitoreo_luz, []() { return input == T; });
-    stateMachine.AddTransition(Monitoreo_th, Alerta, []() { return input == H; });
+    // Monitoreo_th -> Monitoreo_luz (por timeout)
+    stateMachine.AddTransition(Monitoreo_th, Monitoreo_luz, []() { 
+        return input == Input::Sign_Timeout; 
+    });
     
-    // From Alerta
-    stateMachine.AddTransition(Alerta, Inicio, []() { return input == A; });
-    stateMachine.AddTransition(Alerta, Monitoreo_th, []() { return input == T; });
+    // Monitoreo_th -> Alerta (por tecla H)
+    stateMachine.AddTransition(Monitoreo_th, Alerta, []() { 
+        return input == Input::H; 
+    });
     
-    // From Monitoreo_luz
-    stateMachine.AddTransition(Monitoreo_luz, Monitoreo_th, []() { return input == T; });
-    stateMachine.AddTransition(Monitoreo_luz, Alarma, []() { return input == L; });
+    // Alerta -> Monitoreo_th (por timeout)
+    stateMachine.AddTransition(Alerta, Monitoreo_th, []() { 
+        return input == Input::Sign_Timeout; 
+    });
     
-    // From Alarma
-    stateMachine.AddTransition(Alarma, Monitoreo_luz, []() { return input == T; });
-    stateMachine.AddTransition(Alarma, Inicio, []() { return input == B; });
+    // Alerta -> Inicio (por tecla A)
+    stateMachine.AddTransition(Alerta, Inicio, []() { 
+        return input == Input::A; 
+    });
+    
+    // Monitoreo_luz -> Monitoreo_th (por timeout)
+    stateMachine.AddTransition(Monitoreo_luz, Monitoreo_th, []() { 
+        return input == Input::Sign_Timeout; 
+    });
+    
+    // Monitoreo_luz -> Alarma (por tecla L)
+    stateMachine.AddTransition(Monitoreo_luz, Alarma, []() { 
+        return input == Input::L; 
+    });
+    
+    // Alarma -> Monitoreo_luz (por timeout)
+    stateMachine.AddTransition(Alarma, Monitoreo_luz, []() { 
+        return input == Input::Sign_Timeout; 
+    });
+    
+    // Alarma -> Inicio (por tecla B)
+    stateMachine.AddTransition(Alarma, Inicio, []() { 
+        return input == Input::B; 
+    });
 
-    // Add actions
-    stateMachine.SetOnEntering(Inicio, outputInicio);
-    stateMachine.SetOnEntering(Monitoreo_th, outputMonitoreo_th);
-    stateMachine.SetOnEntering(Alerta, outputAlerta);
-    stateMachine.SetOnEntering(Monitoreo_luz, outputMonitoreo_luz);
-    stateMachine.SetOnEntering(Alarma, outputAlarma);
+    // Acciones de entrada a estados
+    stateMachine.SetOnEntering(Inicio, []() {
+        outputInicio();
+        setTimeout(timeoutInicio, 5000); // Configura timeout 5s
+    });
+    
+    stateMachine.SetOnEntering(Monitoreo_th, []() {
+        outputMonitoreo_th();
+        setTimeout(timeoutMonThToLuz, 7000); // Configura timeout 7s
+    });
+    
+    stateMachine.SetOnEntering(Alerta, []() {
+        outputAlerta();
+        setTimeout(timeoutAlertaToMonTh, 4000); // Configura timeout 4s
+    });
+    
+    stateMachine.SetOnEntering(Monitoreo_luz, []() {
+        outputMonitoreo_luz();
+        setTimeout(timeoutMonLuzToTh, 2000); // Configura timeout 2s
+    });
+    
+    stateMachine.SetOnEntering(Alarma, []() {
+        outputAlarma();
+        setTimeout(timeoutAlarmaToLuz, 5000); // Configura timeout 5s
+    });
 
-    stateMachine.SetOnLeaving(Inicio, []() { Serial.println("Leaving Inicio"); });
-    stateMachine.SetOnLeaving(Monitoreo_th, []() { Serial.println("Leaving Monitoreo_th"); });
-    stateMachine.SetOnLeaving(Alerta, []() { Serial.println("Leaving Alerta"); });
-    stateMachine.SetOnLeaving(Monitoreo_luz, []() { Serial.println("Leaving Monitoreo_luz"); });
-    stateMachine.SetOnLeaving(Alarma, []() { Serial.println("Leaving Alarma"); });
+    // Acciones de salida de estados
+    stateMachine.SetOnLeaving(Inicio, []() { 
+        Serial.println("Saliendo de Inicio"); 
+        timeoutInicio.Stop();
+    });
+    
+    stateMachine.SetOnLeaving(Monitoreo_th, []() { 
+        Serial.println("Saliendo de Monitoreo_th"); 
+        timeoutMonThToLuz.Stop();
+    });
+    
+    stateMachine.SetOnLeaving(Alerta, []() { 
+        Serial.println("Saliendo de Alerta"); 
+        timeoutAlertaToMonTh.Stop();
+    });
+    
+    stateMachine.SetOnLeaving(Monitoreo_luz, []() { 
+        Serial.println("Saliendo de Monitoreo_luz"); 
+        timeoutMonLuzToTh.Stop();
+    });
+    
+    stateMachine.SetOnLeaving(Alarma, []() { 
+        Serial.println("Saliendo de Alarma"); 
+        timeoutAlarmaToLuz.Stop();
+    });
 }
 
 void setup() 
 {
     Serial.begin(9600);
-
-    Serial.println("Starting State Machine...");
+    Serial.println("Iniciando Maquina de Estados...");
     setupStateMachine();    
-    Serial.println("State Machine Started");
+    Serial.println("Maquina de Estados Iniciada");
 
-    // Initial state
+    // Estado inicial
     stateMachine.SetState(Inicio, false, true);
 }
 
 void loop() 
 {
-    // Read user input
+    // Actualizar todas las tareas de timeout
+    timeoutInicio.Update();
+    timeoutMonThToLuz.Update();
+    timeoutAlertaToMonTh.Update();
+    timeoutMonLuzToTh.Update();
+    timeoutAlarmaToLuz.Update();
+
+    // Leer entrada del usuario
     input = static_cast<Input>(readInput());
 
-    // Update State Machine
+    // Actualizar maquina de estados
     stateMachine.Update();
 }
 
-// Auxiliar function that reads the user input
+// Función para leer entradas
 int readInput()
 {
-    Input currentInput = Input::Unknown;
     if (Serial.available())
     {
-        char incomingChar = Serial.read();
-
-        switch (incomingChar)
+        char c = Serial.read();
+        switch(c)
         {
-            case 'T': currentInput = Input::T; break;
-            case 'H': currentInput = Input::H; break;
-            case 'A': currentInput = Input::A; break;
-            case 'L': currentInput = Input::L; break;
-            case 'B': currentInput = Input::B; break;
-            default: break;
+            case 'T': return Input::T;
+            case 'H': return Input::H;
+            case 'A': return Input::A;
+            case 'L': return Input::L;
+            case 'B': return Input::B;
         }
     }
-
-    return currentInput;
+    return Input::Unknown;
 }
 
-// Auxiliar output functions that show the state debug
-void outputInicio()
-{
-    Serial.println("State: Inicio");
-    Serial.println("Available transitions:");
-    Serial.println("Press T -> Monitoreo_th");
-    Serial.println();
+// Funciones de salida
+void outputInicio() {
+    Serial.println("\n--- ESTADO: Inicio ---");
+    Serial.println("Transiciones: Timeout(5s) -> Monitoreo_th");
 }
 
-void outputMonitoreo_th()
-{
-    Serial.println("State: Monitoreo_th");
-    Serial.println("Available transitions:");
-    Serial.println("Press T -> Monitoreo_luz");
-    Serial.println("Press H -> Alerta");
-    Serial.println();
+void outputMonitoreo_th() {
+    Serial.println("\n--- ESTADO: Monitoreo_th ---");
+    Serial.println("Transiciones:");
+    Serial.println("  Timeout(7s) -> Monitoreo_luz");
+    Serial.println("  Tecla 'H'   -> Alerta");
 }
 
-void outputAlerta()
-{
-    Serial.println("State: Alerta");
-    Serial.println("Available transitions:");
-    Serial.println("Press A -> Inicio");
-    Serial.println("Press T -> Monitoreo_th");
-    Serial.println();
+void outputAlerta() {
+    Serial.println("\n--- ESTADO: Alerta ---");
+    Serial.println("Transiciones:");
+    Serial.println("  Timeout(4s) -> Monitoreo_th");
+    Serial.println("  Tecla 'A'   -> Inicio");
 }
 
-void outputMonitoreo_luz()
-{
-    Serial.println("State: Monitoreo_luz");
-    Serial.println("Available transitions:");
-    Serial.println("Press T -> Monitoreo_th");
-    Serial.println("Press L -> Alarma");
-    Serial.println();
+void outputMonitoreo_luz() {
+    Serial.println("\n--- ESTADO: Monitoreo_luz ---");
+    Serial.println("Transiciones:");
+    Serial.println("  Timeout(2s) -> Monitoreo_th");
+    Serial.println("  Tecla 'L'   -> Alarma");
 }
 
-void outputAlarma()
-{
-    Serial.println("State: Alarma");
-    Serial.println("Available transitions:");
-    Serial.println("Press T -> Monitoreo_luz");
-    Serial.println("Press B -> Inicio");
-    Serial.println();
+void outputAlarma() {
+    Serial.println("\n--- ESTADO: Alarma ---");
+    Serial.println("Transiciones:");
+    Serial.println("  Timeout(5s) -> Monitoreo_luz");
+    Serial.println("  Tecla 'B'   -> Inicio");
 }
