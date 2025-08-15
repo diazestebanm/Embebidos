@@ -1,8 +1,18 @@
 #include "StateMachineLib.h"
 #include <AsyncTaskLib.h>
-#include <DHT.h> // Librería para DHT11
+#include <DHT.h>
 
-// State Alias
+// ======= Pines / DHT =======
+const uint8_t DHT_PIN = 2;    // DHT11 en digital 2
+const uint8_t LDR_PIN = A0;   // LDR en A0 (Mega)
+#define DHTTYPE DHT11
+DHT dht(DHT_PIN, DHTTYPE);
+
+// ======= Pines LED reales (añadidos, mínimos) =======
+const uint8_t LED_AZUL = 8;   // Alerta
+const uint8_t LED_ROJO = 9;   // Alarma
+
+// ======= Estados e Inputs =======
 enum State
 {
     Inicio = 0,
@@ -12,274 +22,250 @@ enum State
     Alarma = 4
 };
 
-// Input Alias
 enum Input
 {
     H = 0,
     A = 1,
     L = 2,
     B = 3,
-    Sign_Timeout = 4,   // Señal de timeout
+    Sign_Timeout = 4,
     Unknown = 5
 };
 
-// Create new StateMachine
+// ======= Máquina =======
 StateMachine stateMachine(5, 9);
-
-// Stores last user input
 Input input = Input::Unknown;
 
-// ======= Definiciones de pines y DHT =======
-const uint8_t DHT_PIN = 2;    // Pin digital para DHT11
-const uint8_t LDR_PIN = A0;   // Pin analógico para LDR (A0 en Mega)
-#define DHTTYPE DHT11
-DHT dht(DHT_PIN, DHTTYPE);
+// ======= Variables para condiciones (mínimo añadido) =======
+float currentTemp = NAN;
+int currentLuz = 0;
 
-// Tareas de timeout (originales)
+// ======= Timeouts originales (cada uno dispara Sign_Timeout) =======
 AsyncTask timeoutInicio(5000, false, []() { input = Input::Sign_Timeout; });
 AsyncTask timeoutMonThToLuz(7000, false, []() { input = Input::Sign_Timeout; });
 AsyncTask timeoutAlertaToMonTh(4000, false, []() { input = Input::Sign_Timeout; });
 AsyncTask timeoutMonLuzToTh(2000, false, []() { input = Input::Sign_Timeout; });
 AsyncTask timeoutAlarmaToLuz(5000, false, []() { input = Input::Sign_Timeout; });
 
-// ======= Nuevas tareas para lectura de sensores (solo usan AsyncTask) =======
-// No arrancan automáticamente; las empezamos al entrar al estado y las paramos al salir
+// ======= Tareas de lectura (AsyncTask, no otra API) =======
 AsyncTask readDHTTask(2000, false, []() {
-    // Leer DHT11 y mostrar temperatura y humedad
     float h = dht.readHumidity();
-    float t = dht.readTemperature(); // Celsius
+    float t = dht.readTemperature();
+    // actualizar variable necesaria para la nueva condición
+    currentTemp = t;
     if (isnan(h) || isnan(t)) {
-        Serial.println("DHT11: lectura fallida");
+        // Mostrar estado y nota corta si falla
+        Serial.println("Estado: Monitoreo_th | Temp: N/A | Hum: N/A");
     } else {
-        Serial.print("DHT11 -> Temp (C): ");
+        Serial.print("Estado: Monitoreo_th | Temp: ");
         Serial.print(t);
-        Serial.print("  Hum (%): ");
-        Serial.println(h);
+        Serial.print("C | Hum: ");
+        Serial.print(h);
+        Serial.println("%");
     }
 });
 
 AsyncTask readLDRTask(500, false, []() {
-    // Leer LDR analógico (0..1023) y mostrar
-    int val = analogRead(LDR_PIN);
-    Serial.print("LDR -> Valor analogico: ");
-    Serial.println(val); // 0..1023 en Mega
+    int val = analogRead(LDR_PIN); // 0..1023 en Mega
+    // actualizar variable necesaria para la nueva condición
+    currentLuz = val;
+    Serial.print("Estado: Monitoreo_luz | Luz: ");
+    Serial.println(val);
 });
 
-// Configuración de timeouts (y ahora arranca la tarea)
+// ======= Tareas para LEDs REALES (reemplazan las impresiones por Serial) =======
+// Alerta: Azul ON 100ms / OFF 300ms
+bool alertaLedOn = false;
+AsyncTask alertaLedTask(100, false, []() {
+    if (alertaLedOn) {
+        // Apagar LED azul
+        digitalWrite(LED_AZUL, LOW);
+        alertaLedOn = false;
+        alertaLedTask.SetIntervalMillis(300); // OFF 300ms
+    } else {
+        // Encender LED azul
+        digitalWrite(LED_AZUL, HIGH);
+        alertaLedOn = true;
+        alertaLedTask.SetIntervalMillis(100); // ON 100ms
+    }
+});
+
+// Alarma: Rojo ON 200ms / OFF 400ms
+bool alarmaLedOn = false;
+AsyncTask alarmaLedTask(200, false, []() {
+    if (alarmaLedOn) {
+        // Apagar LED rojo
+        digitalWrite(LED_ROJO, LOW);
+        alarmaLedOn = false;
+        alarmaLedTask.SetIntervalMillis(400); // OFF 400ms
+    } else {
+        // Encender LED rojo
+        digitalWrite(LED_ROJO, HIGH);
+        alarmaLedOn = true;
+        alarmaLedTask.SetIntervalMillis(200); // ON 200ms
+    }
+});
+
+// ======= Helper para configurar timeouts (misma técnica que antes) =======
 void setTimeout(AsyncTask& task, unsigned long interval) {
     task.SetIntervalMillis(interval);
     task.Reset();
-    task.Start(); // <-- cambio mínimo ya aplicado antes; arranca la AsyncTask
+    task.Start();
 }
 
-// Setup the State Machine
+// ======= Setup de la máquina de estados (con las dos transiciones modificadas) =======
 void setupStateMachine()
 {
-    // Transiciones
-    // Inicio -> Monitoreo_th (por timeout)
-    stateMachine.AddTransition(Inicio, Monitoreo_th, []() { 
-        return input == Input::Sign_Timeout; 
-    });
-    
-    // Monitoreo_th -> Monitoreo_luz (por timeout)
-    stateMachine.AddTransition(Monitoreo_th, Monitoreo_luz, []() { 
-        return input == Input::Sign_Timeout; 
-    });
-    
-    // Monitoreo_th -> Alerta (por tecla H)
-    stateMachine.AddTransition(Monitoreo_th, Alerta, []() { 
-        return input == Input::H; 
-    });
-    
-    // Alerta -> Monitoreo_th (por timeout)
-    stateMachine.AddTransition(Alerta, Monitoreo_th, []() { 
-        return input == Input::Sign_Timeout; 
-    });
-    
-    // Alerta -> Inicio (por tecla A)
-    stateMachine.AddTransition(Alerta, Inicio, []() { 
-        return input == Input::A; 
-    });
-    
-    // Monitoreo_luz -> Monitoreo_th (por timeout)
-    stateMachine.AddTransition(Monitoreo_luz, Monitoreo_th, []() { 
-        return input == Input::Sign_Timeout; 
-    });
-    
-    // Monitoreo_luz -> Alarma (por tecla L)
-    stateMachine.AddTransition(Monitoreo_luz, Alarma, []() { 
-        return input == Input::L; 
-    });
-    
-    // Alarma -> Monitoreo_luz (por timeout)
-    stateMachine.AddTransition(Alarma, Monitoreo_luz, []() { 
-        return input == Input::Sign_Timeout; 
-    });
-    
-    // Alarma -> Inicio (por tecla B)
-    stateMachine.AddTransition(Alarma, Inicio, []() { 
-        return input == Input::B; 
-    });
+    // Transiciones (idénticas salvo las dos condiciones requeridas)
+    stateMachine.AddTransition(Inicio, Monitoreo_th, []() { return input == Input::Sign_Timeout; });
+    stateMachine.AddTransition(Monitoreo_th, Monitoreo_luz, []() { return input == Input::Sign_Timeout; });
 
-    // Acciones de entrada a estados
+    // REEMPLAZADA: antes era input == Input::H
+    stateMachine.AddTransition(Monitoreo_th, Alerta, []() { return (isnan(currentTemp) ? false : (currentTemp > 27.0)); });
+
+    stateMachine.AddTransition(Alerta, Monitoreo_th, []() { return input == Input::Sign_Timeout; });
+    stateMachine.AddTransition(Alerta, Inicio, []() { return input == Input::A; });
+    stateMachine.AddTransition(Monitoreo_luz, Monitoreo_th, []() { return input == Input::Sign_Timeout; });
+
+    // REEMPLAZADA: antes era input == Input::L
+    stateMachine.AddTransition(Monitoreo_luz, Alarma, []() { return currentLuz > 512; });
+
+    stateMachine.AddTransition(Alarma, Monitoreo_luz, []() { return input == Input::Sign_Timeout; });
+    stateMachine.AddTransition(Alarma, Inicio, []() { return input == Input::B; });
+
+    // On Enter (arrancamos las tareas correspondientes y configuramos timeouts)
     stateMachine.SetOnEntering(Inicio, []() {
-        outputInicio();
-        setTimeout(timeoutInicio, 5000); // Configura timeout 5s
+        Serial.println("Estado: Inicio");
+        setTimeout(timeoutInicio, 5000);
     });
-    
-    stateMachine.SetOnEntering(Monitoreo_th, []() {
-        outputMonitoreo_th();
-        setTimeout(timeoutMonThToLuz, 7000); // Configura timeout 7s
 
-        // Arrancar la tarea que lee DHT (cada 2000 ms)
+    stateMachine.SetOnEntering(Monitoreo_th, []() {
+        // Mensaje corto al entrar; las lecturas las imprime la tarea periódica
+        Serial.println("Estado: Monitoreo_th");
+        setTimeout(timeoutMonThToLuz, 7000);
+
         readDHTTask.SetIntervalMillis(2000);
         readDHTTask.Reset();
         readDHTTask.Start();
     });
-    
-    stateMachine.SetOnEntering(Alerta, []() {
-        outputAlerta();
-        setTimeout(timeoutAlertaToMonTh, 4000); // Configura timeout 4s
-    });
-    
-    stateMachine.SetOnEntering(Monitoreo_luz, []() {
-        outputMonitoreo_luz();
-        setTimeout(timeoutMonLuzToTh, 2000); // Configura timeout 2s
 
-        // Arrancar la tarea que lee LDR (cada 500 ms)
+    stateMachine.SetOnEntering(Alerta, []() {
+        Serial.println("Estado: Alerta");
+        setTimeout(timeoutAlertaToMonTh, 4000);
+
+        alertaLedOn = false;
+        alertaLedTask.SetIntervalMillis(100);
+        alertaLedTask.Reset();
+        alertaLedTask.Start();
+    });
+
+    stateMachine.SetOnEntering(Monitoreo_luz, []() {
+        Serial.println("Estado: Monitoreo_luz");
+        setTimeout(timeoutMonLuzToTh, 2000);
+
         readLDRTask.SetIntervalMillis(500);
         readLDRTask.Reset();
         readLDRTask.Start();
     });
-    
+
     stateMachine.SetOnEntering(Alarma, []() {
-        outputAlarma();
-        setTimeout(timeoutAlarmaToLuz, 5000); // Configura timeout 5s
+        Serial.println("Estado: Alarma");
+        setTimeout(timeoutAlarmaToLuz, 5000);
+
+        alarmaLedOn = false;
+        alarmaLedTask.SetIntervalMillis(200);
+        alarmaLedTask.Reset();
+        alarmaLedTask.Start();
     });
 
-    // Acciones de salida de estados
-    stateMachine.SetOnLeaving(Inicio, []() { 
-        Serial.println("Saliendo de Inicio"); 
-        input = Input::Unknown;  // Resetear la señal
+    // On Leaving (detenemos las tareas correspondientes y reseteamos input)
+    stateMachine.SetOnLeaving(Inicio, []() {
+        input = Input::Unknown;
         timeoutInicio.Stop();
     });
-    
-    stateMachine.SetOnLeaving(Monitoreo_th, []() { 
-        Serial.println("Saliendo de Monitoreo_th"); 
-        input = Input::Unknown;  // Resetear la señal
-        timeoutMonThToLuz.Stop();
 
-        // Detener la tarea de lectura DHT al salir del estado
+    stateMachine.SetOnLeaving(Monitoreo_th, []() {
+        input = Input::Unknown;
+        timeoutMonThToLuz.Stop();
         readDHTTask.Stop();
     });
-    
-    stateMachine.SetOnLeaving(Alerta, []() { 
-        Serial.println("Saliendo de Alerta"); 
-        input = Input::Unknown;  // Resetear la señal
-        timeoutAlertaToMonTh.Stop();
-    });
-    
-    stateMachine.SetOnLeaving(Monitoreo_luz, []() { 
-        Serial.println("Saliendo de Monitoreo_luz"); 
-        input = Input::Unknown;  // Resetear la señal
-        timeoutMonLuzToTh.Stop();
 
-        // Detener la tarea de lectura LDR al salir del estado
+    stateMachine.SetOnLeaving(Alerta, []() {
+        input = Input::Unknown;
+        timeoutAlertaToMonTh.Stop();
+        alertaLedTask.Stop();
+        digitalWrite(LED_AZUL, LOW); // apagar al salir
+    });
+
+    stateMachine.SetOnLeaving(Monitoreo_luz, []() {
+        input = Input::Unknown;
+        timeoutMonLuzToTh.Stop();
         readLDRTask.Stop();
     });
-    
-    stateMachine.SetOnLeaving(Alarma, []() { 
-        Serial.println("Saliendo de Alarma"); 
-        input = Input::Unknown;  // Resetear la señal
+
+    stateMachine.SetOnLeaving(Alarma, []() {
+        input = Input::Unknown;
         timeoutAlarmaToLuz.Stop();
+        alarmaLedTask.Stop();
+        digitalWrite(LED_ROJO, LOW); // apagar al salir
     });
 }
 
-void setup() 
+// ======= Setup / Loop =======
+void setup()
 {
     Serial.begin(9600);
-    Serial.println("Iniciando Maquina de Estados...");
-    setupStateMachine();    
-    Serial.println("Maquina de Estados Iniciada");
-
-    // Inicializar DHT
     dht.begin();
 
-    // Estado inicial
+    // configurar pines LED (solo esto es nuevo)
+    pinMode(LED_AZUL, OUTPUT);
+    pinMode(LED_ROJO, OUTPUT);
+    digitalWrite(LED_AZUL, LOW);
+    digitalWrite(LED_ROJO, LOW);
+
+    setupStateMachine();
     stateMachine.SetState(Inicio, false, true);
 }
 
-void loop() 
+void loop()
 {
-    // Actualizar todas las tareas de timeout
+    // Actualizar timeouts
     timeoutInicio.Update();
     timeoutMonThToLuz.Update();
     timeoutAlertaToMonTh.Update();
     timeoutMonLuzToTh.Update();
     timeoutAlarmaToLuz.Update();
 
-    // Actualizar tareas de lectura de sensores
+    // Actualizar tareas sensores y LEDs
     readDHTTask.Update();
     readLDRTask.Update();
+    alertaLedTask.Update();
+    alarmaLedTask.Update();
 
-    // Leer entrada del usuario (solo si no hay señal activa)
-    if(input == Input::Unknown) {
+    // Leer entrada del usuario (si no hay señal activa)
+    if (input == Input::Unknown) {
         input = static_cast<Input>(readInput());
     }
 
-    // Actualizar maquina de estados
+    // Actualizar máquina
     stateMachine.Update();
 }
 
-// Función para leer entradas
+// ======= Lectura serial de comandos =======
 int readInput()
 {
     if (Serial.available())
     {
         char c = Serial.read();
-        switch(c)
+        switch (c)
         {
             case 'H': return Input::H;
             case 'A': return Input::A;
             case 'L': return Input::L;
             case 'B': return Input::B;
+            default: return Input::Unknown;
         }
     }
     return Input::Unknown;
 }
 
-// Funciones de salida
-void outputInicio() {
-    Serial.println("\n--- ESTADO: Inicio ---");
-    Serial.println("Transicion automatica a Monitoreo_th en 5s");
-}
-
-void outputMonitoreo_th() {
-    Serial.println("\n--- ESTADO: Monitoreo_th ---");
-    Serial.println("Transiciones:");
-    Serial.println("  Automatico (7s) -> Monitoreo_luz");
-    Serial.println("  Tecla 'H'       -> Alerta");
-    Serial.println("Leyendo DHT11: se mostrará Temp y Hum mientras esté en este estado.");
-}
-
-void outputAlerta() {
-    Serial.println("\n--- ESTADO: Alerta ---");
-    Serial.println("Transiciones:");
-    Serial.println("  Automatico (4s) -> Monitoreo_th");
-    Serial.println("  Tecla 'A'       -> Inicio");
-}
-
-void outputMonitoreo_luz() {
-    Serial.println("\n--- ESTADO: Monitoreo_luz ---");
-    Serial.println("Transiciones:");
-    Serial.println("  Automatico (2s) -> Monitoreo_th");
-    Serial.println("  Tecla 'L'       -> Alarma");
-    Serial.println("Leyendo LDR: se mostrará valor analogico (0..1023) mientras esté en este estado.");
-}
-
-void outputAlarma() {
-    Serial.println("\n--- ESTADO: Alarma ---");
-    Serial.println("Transiciones:");
-    Serial.println("  Automatico (5s) -> Monitoreo_luz");
-    Serial.println("  Tecla 'B'       -> Inicio");
-}
