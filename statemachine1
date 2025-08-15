@@ -1,5 +1,5 @@
 #include "StateMachineLib.h"
-#include <AsyncTaskLib.h> // Asegúrate de incluir la librería AsyncTask
+#include <AsyncTaskLib.h>
 
 // State Alias
 enum State
@@ -14,13 +14,12 @@ enum State
 // Input Alias
 enum Input
 {
-    T = 0,
-    H = 1,
-    A = 2,
-    L = 3,
-    B = 4,
-    Sign_Timeout = 5,   // Nueva señal de timeout
-    Unknown = 6
+    H = 0,
+    A = 1,
+    L = 2,
+    B = 3,
+    Sign_Timeout = 4,   // Señal de timeout
+    Unknown = 5
 };
 
 // Create new StateMachine
@@ -29,7 +28,7 @@ StateMachine stateMachine(5, 9);
 // Stores last user input
 Input input = Input::Unknown;
 
-// Tareas de timeout (una por cada transición basada en tiempo)
+// Tareas de timeout
 AsyncTask timeoutInicio(5000, false, []() { input = Input::Sign_Timeout; });
 AsyncTask timeoutMonThToLuz(7000, false, []() { input = Input::Sign_Timeout; });
 AsyncTask timeoutAlertaToMonTh(4000, false, []() { input = Input::Sign_Timeout; });
@@ -120,26 +119,31 @@ void setupStateMachine()
     // Acciones de salida de estados
     stateMachine.SetOnLeaving(Inicio, []() { 
         Serial.println("Saliendo de Inicio"); 
+        input = Input::Unknown;  // Resetear la señal
         timeoutInicio.Stop();
     });
     
     stateMachine.SetOnLeaving(Monitoreo_th, []() { 
         Serial.println("Saliendo de Monitoreo_th"); 
+        input = Input::Unknown;  // Resetear la señal
         timeoutMonThToLuz.Stop();
     });
     
     stateMachine.SetOnLeaving(Alerta, []() { 
         Serial.println("Saliendo de Alerta"); 
+        input = Input::Unknown;  // Resetear la señal
         timeoutAlertaToMonTh.Stop();
     });
     
     stateMachine.SetOnLeaving(Monitoreo_luz, []() { 
         Serial.println("Saliendo de Monitoreo_luz"); 
+        input = Input::Unknown;  // Resetear la señal
         timeoutMonLuzToTh.Stop();
     });
     
     stateMachine.SetOnLeaving(Alarma, []() { 
         Serial.println("Saliendo de Alarma"); 
+        input = Input::Unknown;  // Resetear la señal
         timeoutAlarmaToLuz.Stop();
     });
 }
@@ -164,8 +168,10 @@ void loop()
     timeoutMonLuzToTh.Update();
     timeoutAlarmaToLuz.Update();
 
-    // Leer entrada del usuario
-    input = static_cast<Input>(readInput());
+    // Leer entrada del usuario (solo si no hay señal activa)
+    if(input == Input::Unknown) {
+        input = static_cast<Input>(readInput());
+    }
 
     // Actualizar maquina de estados
     stateMachine.Update();
@@ -179,7 +185,6 @@ int readInput()
         char c = Serial.read();
         switch(c)
         {
-            case 'T': return Input::T;
             case 'H': return Input::H;
             case 'A': return Input::A;
             case 'L': return Input::L;
@@ -192,33 +197,33 @@ int readInput()
 // Funciones de salida
 void outputInicio() {
     Serial.println("\n--- ESTADO: Inicio ---");
-    Serial.println("Transiciones: Timeout(5s) -> Monitoreo_th");
+    Serial.println("Transicion automatica a Monitoreo_th en 5s");
 }
 
 void outputMonitoreo_th() {
     Serial.println("\n--- ESTADO: Monitoreo_th ---");
     Serial.println("Transiciones:");
-    Serial.println("  Timeout(7s) -> Monitoreo_luz");
-    Serial.println("  Tecla 'H'   -> Alerta");
+    Serial.println("  Automatico (7s) -> Monitoreo_luz");
+    Serial.println("  Tecla 'H'       -> Alerta");
 }
 
 void outputAlerta() {
     Serial.println("\n--- ESTADO: Alerta ---");
     Serial.println("Transiciones:");
-    Serial.println("  Timeout(4s) -> Monitoreo_th");
-    Serial.println("  Tecla 'A'   -> Inicio");
+    Serial.println("  Automatico (4s) -> Monitoreo_th");
+    Serial.println("  Tecla 'A'       -> Inicio");
 }
 
 void outputMonitoreo_luz() {
     Serial.println("\n--- ESTADO: Monitoreo_luz ---");
     Serial.println("Transiciones:");
-    Serial.println("  Timeout(2s) -> Monitoreo_th");
-    Serial.println("  Tecla 'L'   -> Alarma");
+    Serial.println("  Automatico (2s) -> Monitoreo_th");
+    Serial.println("  Tecla 'L'       -> Alarma");
 }
 
 void outputAlarma() {
     Serial.println("\n--- ESTADO: Alarma ---");
     Serial.println("Transiciones:");
-    Serial.println("  Timeout(5s) -> Monitoreo_luz");
-    Serial.println("  Tecla 'B'   -> Inicio");
+    Serial.println("  Automatico (5s) -> Monitoreo_luz");
+    Serial.println("  Tecla 'B'       -> Inicio");
 }
