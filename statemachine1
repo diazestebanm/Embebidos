@@ -37,8 +37,8 @@ StateMachine stateMachine(5, 9);
 Input input = Input::Unknown;
 
 // ======= Variables para condiciones (mínimo añadido) =======
-float currentTemp = NAN;
-int currentLuz = 0;
+float currentTemp = NAN;   // se limpiará al entrar a Monitoreo_th
+int currentLuz = -1;       // -1 indica "vacío" (sin lectura válida aún)
 
 // ======= Timeouts originales (cada uno dispara Sign_Timeout) =======
 AsyncTask timeoutInicio(5000, false, []() { input = Input::Sign_Timeout; });
@@ -128,7 +128,8 @@ void setupStateMachine()
     stateMachine.AddTransition(Monitoreo_luz, Monitoreo_th, []() { return input == Input::Sign_Timeout; });
 
     // REEMPLAZADA: antes era input == Input::L
-    stateMachine.AddTransition(Monitoreo_luz, Alarma, []() { return currentLuz > 512; });
+    // ahora exige que currentLuz tenga lectura válida (>=0) y supere 512
+    stateMachine.AddTransition(Monitoreo_luz, Alarma, []() { return (currentLuz >= 0 && currentLuz > 512); });
 
     stateMachine.AddTransition(Alarma, Monitoreo_luz, []() { return input == Input::Sign_Timeout; });
     stateMachine.AddTransition(Alarma, Inicio, []() { return input == Input::B; });
@@ -140,6 +141,9 @@ void setupStateMachine()
     });
 
     stateMachine.SetOnEntering(Monitoreo_th, []() {
+        // limpiar temp antiguo para que no dispare inmediatamente al volver
+        currentTemp = NAN;
+
         // Mensaje corto al entrar; las lecturas las imprime la tarea periódica
         Serial.println("Estado: Monitoreo_th");
         setTimeout(timeoutMonThToLuz, 7000);
@@ -160,6 +164,9 @@ void setupStateMachine()
     });
 
     stateMachine.SetOnEntering(Monitoreo_luz, []() {
+        // limpiar lectura antigua para que no dispare inmediatamente al volver
+        currentLuz = -1;
+
         Serial.println("Estado: Monitoreo_luz");
         setTimeout(timeoutMonLuzToTh, 2000);
 
@@ -268,4 +275,5 @@ int readInput()
     }
     return Input::Unknown;
 }
+
 
