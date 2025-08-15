@@ -1,0 +1,153 @@
+#include "StateMachineLib.h"
+
+// State Alias
+enum State
+{
+    Inicio = 0,
+    Monitoreo_th = 1,
+    Alerta = 2,
+    Monitoreo_luz = 3,
+    Alarma = 4
+};
+
+// Input Alias
+enum Input
+{
+    T = 0,
+    H = 1,
+    A = 2,
+    L = 3,
+    B = 4,
+    Unknown = 5
+};
+
+// Create new StateMachine
+StateMachine stateMachine(5, 9);
+
+// Stores last user input
+Input input;
+
+// Setup the State Machine
+void setupStateMachine()
+{
+    // Add transitions
+    // From Inicio
+    stateMachine.AddTransition(Inicio, Monitoreo_th, []() { return input == T; });
+    
+    // From Monitoreo_th
+    stateMachine.AddTransition(Monitoreo_th, Monitoreo_luz, []() { return input == T; });
+    stateMachine.AddTransition(Monitoreo_th, Alerta, []() { return input == H; });
+    
+    // From Alerta
+    stateMachine.AddTransition(Alerta, Inicio, []() { return input == A; });
+    stateMachine.AddTransition(Alerta, Monitoreo_th, []() { return input == T; });
+    
+    // From Monitoreo_luz
+    stateMachine.AddTransition(Monitoreo_luz, Monitoreo_th, []() { return input == T; });
+    stateMachine.AddTransition(Monitoreo_luz, Alarma, []() { return input == L; });
+    
+    // From Alarma
+    stateMachine.AddTransition(Alarma, Monitoreo_luz, []() { return input == T; });
+    stateMachine.AddTransition(Alarma, Inicio, []() { return input == B; });
+
+    // Add actions
+    stateMachine.SetOnEntering(Inicio, outputInicio);
+    stateMachine.SetOnEntering(Monitoreo_th, outputMonitoreo_th);
+    stateMachine.SetOnEntering(Alerta, outputAlerta);
+    stateMachine.SetOnEntering(Monitoreo_luz, outputMonitoreo_luz);
+    stateMachine.SetOnEntering(Alarma, outputAlarma);
+
+    stateMachine.SetOnLeaving(Inicio, []() { Serial.println("Leaving Inicio"); });
+    stateMachine.SetOnLeaving(Monitoreo_th, []() { Serial.println("Leaving Monitoreo_th"); });
+    stateMachine.SetOnLeaving(Alerta, []() { Serial.println("Leaving Alerta"); });
+    stateMachine.SetOnLeaving(Monitoreo_luz, []() { Serial.println("Leaving Monitoreo_luz"); });
+    stateMachine.SetOnLeaving(Alarma, []() { Serial.println("Leaving Alarma"); });
+}
+
+void setup() 
+{
+    Serial.begin(9600);
+
+    Serial.println("Starting State Machine...");
+    setupStateMachine();    
+    Serial.println("State Machine Started");
+
+    // Initial state
+    stateMachine.SetState(Inicio, false, true);
+}
+
+void loop() 
+{
+    // Read user input
+    input = static_cast<Input>(readInput());
+
+    // Update State Machine
+    stateMachine.Update();
+}
+
+// Auxiliar function that reads the user input
+int readInput()
+{
+    Input currentInput = Input::Unknown;
+    if (Serial.available())
+    {
+        char incomingChar = Serial.read();
+
+        switch (incomingChar)
+        {
+            case 'T': currentInput = Input::T; break;
+            case 'H': currentInput = Input::H; break;
+            case 'A': currentInput = Input::A; break;
+            case 'L': currentInput = Input::L; break;
+            case 'B': currentInput = Input::B; break;
+            default: break;
+        }
+    }
+
+    return currentInput;
+}
+
+// Auxiliar output functions that show the state debug
+void outputInicio()
+{
+    Serial.println("State: Inicio");
+    Serial.println("Available transitions:");
+    Serial.println("Press T -> Monitoreo_th");
+    Serial.println();
+}
+
+void outputMonitoreo_th()
+{
+    Serial.println("State: Monitoreo_th");
+    Serial.println("Available transitions:");
+    Serial.println("Press T -> Monitoreo_luz");
+    Serial.println("Press H -> Alerta");
+    Serial.println();
+}
+
+void outputAlerta()
+{
+    Serial.println("State: Alerta");
+    Serial.println("Available transitions:");
+    Serial.println("Press A -> Inicio");
+    Serial.println("Press T -> Monitoreo_th");
+    Serial.println();
+}
+
+void outputMonitoreo_luz()
+{
+    Serial.println("State: Monitoreo_luz");
+    Serial.println("Available transitions:");
+    Serial.println("Press T -> Monitoreo_th");
+    Serial.println("Press L -> Alarma");
+    Serial.println();
+}
+
+void outputAlarma()
+{
+    Serial.println("State: Alarma");
+    Serial.println("Available transitions:");
+    Serial.println("Press T -> Monitoreo_luz");
+    Serial.println("Press B -> Inicio");
+    Serial.println();
+}
