@@ -1,5 +1,6 @@
 #include "StateMachineLib.h"
 #include <AsyncTaskLib.h>
+#include <DHT.h> // Librería para DHT11
 
 // State Alias
 enum State
@@ -28,18 +29,47 @@ StateMachine stateMachine(5, 9);
 // Stores last user input
 Input input = Input::Unknown;
 
-// Tareas de timeout
+// ======= Definiciones de pines y DHT =======
+const uint8_t DHT_PIN = 2;    // Pin digital para DHT11
+const uint8_t LDR_PIN = A0;   // Pin analógico para LDR (A0 en Mega)
+#define DHTTYPE DHT11
+DHT dht(DHT_PIN, DHTTYPE);
+
+// Tareas de timeout (originales)
 AsyncTask timeoutInicio(5000, false, []() { input = Input::Sign_Timeout; });
 AsyncTask timeoutMonThToLuz(7000, false, []() { input = Input::Sign_Timeout; });
 AsyncTask timeoutAlertaToMonTh(4000, false, []() { input = Input::Sign_Timeout; });
 AsyncTask timeoutMonLuzToTh(2000, false, []() { input = Input::Sign_Timeout; });
 AsyncTask timeoutAlarmaToLuz(5000, false, []() { input = Input::Sign_Timeout; });
 
-// Configuración de timeouts
+// ======= Nuevas tareas para lectura de sensores (solo usan AsyncTask) =======
+// No arrancan automáticamente; las empezamos al entrar al estado y las paramos al salir
+AsyncTask readDHTTask(2000, false, []() {
+    // Leer DHT11 y mostrar temperatura y humedad
+    float h = dht.readHumidity();
+    float t = dht.readTemperature(); // Celsius
+    if (isnan(h) || isnan(t)) {
+        Serial.println("DHT11: lectura fallida");
+    } else {
+        Serial.print("DHT11 -> Temp (C): ");
+        Serial.print(t);
+        Serial.print("  Hum (%): ");
+        Serial.println(h);
+    }
+});
+
+AsyncTask readLDRTask(500, false, []() {
+    // Leer LDR analógico (0..1023) y mostrar
+    int val = analogRead(LDR_PIN);
+    Serial.print("LDR -> Valor analogico: ");
+    Serial.println(val); // 0..1023 en Mega
+});
+
+// Configuración de timeouts (y ahora arranca la tarea)
 void setTimeout(AsyncTask& task, unsigned long interval) {
     task.SetIntervalMillis(interval);
     task.Reset();
-    task.Start(); // <-- ARRANCAR la tarea después de configurar/resetear
+    task.Start(); // <-- cambio mínimo ya aplicado antes; arranca la AsyncTask
 }
 
 // Setup the State Machine
@@ -100,6 +130,11 @@ void setupStateMachine()
     stateMachine.SetOnEntering(Monitoreo_th, []() {
         outputMonitoreo_th();
         setTimeout(timeoutMonThToLuz, 7000); // Configura timeout 7s
+
+        // Arrancar la tarea que lee DHT (cada 2000 ms)
+        readDHTTask.SetIntervalMillis(2000);
+        readDHTTask.Reset();
+        readDHTTask.Start();
     });
     
     stateMachine.SetOnEntering(Alerta, []() {
@@ -110,6 +145,11 @@ void setupStateMachine()
     stateMachine.SetOnEntering(Monitoreo_luz, []() {
         outputMonitoreo_luz();
         setTimeout(timeoutMonLuzToTh, 2000); // Configura timeout 2s
+
+        // Arrancar la tarea que lee LDR (cada 500 ms)
+        readLDRTask.SetIntervalMillis(500);
+        readLDRTask.Reset();
+        readLDRTask.Start();
     });
     
     stateMachine.SetOnEntering(Alarma, []() {
@@ -128,6 +168,9 @@ void setupStateMachine()
         Serial.println("Saliendo de Monitoreo_th"); 
         input = Input::Unknown;  // Resetear la señal
         timeoutMonThToLuz.Stop();
+
+        // Detener la tarea de lectura DHT al salir del estado
+        readDHTTask.Stop();
     });
     
     stateMachine.SetOnLeaving(Alerta, []() { 
@@ -140,6 +183,9 @@ void setupStateMachine()
         Serial.println("Saliendo de Monitoreo_luz"); 
         input = Input::Unknown;  // Resetear la señal
         timeoutMonLuzToTh.Stop();
+
+        // Detener la tarea de lectura LDR al salir del estado
+        readLDRTask.Stop();
     });
     
     stateMachine.SetOnLeaving(Alarma, []() { 
@@ -156,6 +202,9 @@ void setup()
     setupStateMachine();    
     Serial.println("Maquina de Estados Iniciada");
 
+    // Inicializar DHT
+    dht.begin();
+
     // Estado inicial
     stateMachine.SetState(Inicio, false, true);
 }
@@ -168,6 +217,10 @@ void loop()
     timeoutAlertaToMonTh.Update();
     timeoutMonLuzToTh.Update();
     timeoutAlarmaToLuz.Update();
+
+    // Actualizar tareas de lectura de sensores
+    readDHTTask.Update();
+    readLDRTask.Update();
 
     // Leer entrada del usuario (solo si no hay señal activa)
     if(input == Input::Unknown) {
@@ -206,6 +259,7 @@ void outputMonitoreo_th() {
     Serial.println("Transiciones:");
     Serial.println("  Automatico (7s) -> Monitoreo_luz");
     Serial.println("  Tecla 'H'       -> Alerta");
+    Serial.println("Leyendo DHT11: se mostrará Temp y Hum mientras esté en este estado.");
 }
 
 void outputAlerta() {
@@ -220,6 +274,7 @@ void outputMonitoreo_luz() {
     Serial.println("Transiciones:");
     Serial.println("  Automatico (2s) -> Monitoreo_th");
     Serial.println("  Tecla 'L'       -> Alarma");
+    Serial.println("Leyendo LDR: se mostrará valor analogico (0..1023) mientras esté en este estado.");
 }
 
 void outputAlarma() {
