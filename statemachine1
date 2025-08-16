@@ -2,53 +2,53 @@
 #include <AsyncTaskLib.h>
 #include <DHT.h>
 
-// ======= Pines / DHT =======
-const uint8_t DHT_PIN = 2;    // DHT11 en digital 2
-const uint8_t LDR_PIN = A0;   // LDR en A0 (Mega)
+// ======= Pines / Sensores =======
+const uint8_t DHT_PIN = 2;    // Pin digital para DHT11
+const uint8_t LDR_PIN = A0;   // Pin analógico para LDR
 const uint8_t LED_PIN = 13;   // LED indicador
-#define DHTTYPE DHT11
-DHT dht(DHT_PIN, DHTTYPE);
+#define DHTTYPE DHT11         // Tipo de sensor DHT
+DHT dht(DHT_PIN, DHTTYPE);    // Objeto DHT
 
-// ======= Estados e Inputs =======
+// ======= Estados =======
 enum State
 {
-    Inicio = 0,
-    Monitoreo_th = 1,
-    Alerta = 2,
-    Monitoreo_luz = 3,
-    Alarma = 4
+    Inicio = 0,         // Estado inicial
+    Monitoreo_th = 1,    // Monitoreo de temperatura y humedad
+    Alerta = 2,          // Alerta por temperatura alta
+    Monitoreo_luz = 3,   // Monitoreo de luz ambiental
+    Alarma = 4           // Alarma por exceso de luz
 };
 
+// ======= Entradas (simplificadas) =======
 enum Input
 {
-    H = 0,
-    A = 1,
-    L = 2,
-    B = 3,
-    Sign_Timeout = 4,
-    Unknown = 5
+    A = 0,              // Botón A (confirmación)
+    B = 1,              // Botón B (confirmación)
+    Sign_Timeout = 2,    // Señal de timeout
+    Unknown = 3          // Estado desconocido
 };
 
-// ======= Máquina =======
-StateMachine stateMachine(5, 9);
-Input input = Input::Unknown;
+// ======= Máquina de estados =======
+StateMachine stateMachine(5, 4);  // 5 estados, 4 entradas
+Input input = Input::Unknown;     // Entrada actual
 
-// ======= Variables para condiciones =======
-float currentTemp = NAN;
-int currentLuz = -1;
+// ======= Variables de sensores =======
+float currentTemp = NAN;  // Almacena temperatura actual
+int currentLuz = -1;      // Almacena valor de luz actual
 
-// ======= Timeouts =======
+// ======= Timeouts para transiciones automáticas =======
 AsyncTask timeoutInicio(5000, false, []() { input = Input::Sign_Timeout; });
 AsyncTask timeoutMonThToLuz(7000, false, []() { input = Input::Sign_Timeout; });
 AsyncTask timeoutAlertaToMonTh(4000, false, []() { input = Input::Sign_Timeout; });
 AsyncTask timeoutMonLuzToTh(2000, false, []() { input = Input::Sign_Timeout; });
 AsyncTask timeoutAlarmaToLuz(5000, false, []() { input = Input::Sign_Timeout; });
 
-// ======= Tareas de lectura =======
+// ======= Tareas de lectura de sensores =======
 AsyncTask readDHTTask(2000, false, []() {
     float h = dht.readHumidity();
     float t = dht.readTemperature();
     currentTemp = t;
+    
     if (isnan(h) || isnan(t)) {
         Serial.println("Estado: Monitoreo_th | Temp: N/A | Hum: N/A");
     } else {
@@ -67,8 +67,8 @@ AsyncTask readLDRTask(500, false, []() {
     Serial.println(val);
 });
 
-// ======= LED patrones =======
-// Alarma: 200 ms ON / 400 ms OFF
+// ======= Patrones de parpadeo LED =======
+// Alarma: 200ms ON, 400ms OFF
 AsyncTask blinkAlarmaTask(200, true, []() {
     static bool ledState = false;
     ledState = !ledState;
@@ -76,7 +76,7 @@ AsyncTask blinkAlarmaTask(200, true, []() {
     blinkAlarmaTask.SetIntervalMillis(ledState ? 200 : 400);
 });
 
-// Alerta: 100 ms ON / 300 ms OFF
+// Alerta: 100ms ON, 300ms OFF
 AsyncTask blinkAlertaTask(100, true, []() {
     static bool ledState = false;
     ledState = !ledState;
@@ -84,20 +84,20 @@ AsyncTask blinkAlertaTask(100, true, []() {
     blinkAlertaTask.SetIntervalMillis(ledState ? 100 : 300);
 });
 
-// ======= Helper para configurar timeouts =======
+// ======= Configuración de timeouts =======
 void setTimeout(AsyncTask& task, unsigned long interval) {
     task.SetIntervalMillis(interval);
     task.Reset();
     task.Start();
 }
 
-// ======= Setup de la máquina de estados =======
+// ======= Configuración de la máquina de estados =======
 void setupStateMachine()
 {
-    // Transiciones
+    // Transiciones entre estados
     stateMachine.AddTransition(Inicio, Monitoreo_th, []() { return input == Input::Sign_Timeout; });
     stateMachine.AddTransition(Monitoreo_th, Monitoreo_luz, []() { return input == Input::Sign_Timeout; });
-    stateMachine.AddTransition(Monitoreo_th, Alerta, []() { return (isnan(currentTemp) ? false : (currentTemp > 27.0)); });
+    stateMachine.AddTransition(Monitoreo_th, Alerta, []() { return (!isnan(currentTemp) && currentTemp > 27.0); });
     stateMachine.AddTransition(Alerta, Monitoreo_th, []() { return input == Input::Sign_Timeout; });
     stateMachine.AddTransition(Alerta, Inicio, []() { return input == Input::A; });
     stateMachine.AddTransition(Monitoreo_luz, Monitoreo_th, []() { return input == Input::Sign_Timeout; });
@@ -105,7 +105,7 @@ void setupStateMachine()
     stateMachine.AddTransition(Alarma, Monitoreo_luz, []() { return input == Input::Sign_Timeout; });
     stateMachine.AddTransition(Alarma, Inicio, []() { return input == Input::B; });
 
-    // On Enter
+    // Acciones al entrar a cada estado
     stateMachine.SetOnEntering(Inicio, []() {
         Serial.println("Estado: Inicio");
         setTimeout(timeoutInicio, 5000);
@@ -140,7 +140,7 @@ void setupStateMachine()
         blinkAlarmaTask.Start();
     });
 
-    // On Leaving
+    // Acciones al salir de cada estado
     stateMachine.SetOnLeaving(Inicio, []() {
         input = Input::Unknown;
         timeoutInicio.Stop();
@@ -173,7 +173,7 @@ void setupStateMachine()
     });
 }
 
-// ======= Setup / Loop =======
+// ======= Configuración inicial =======
 void setup()
 {
     Serial.begin(9600);
@@ -184,31 +184,32 @@ void setup()
     stateMachine.SetState(Inicio, false, true);
 }
 
+// ======= Bucle principal =======
 void loop()
 {
-    // Actualizar timeouts
+    // Actualizar tareas de tiempo
     timeoutInicio.Update();
     timeoutMonThToLuz.Update();
     timeoutAlertaToMonTh.Update();
     timeoutMonLuzToTh.Update();
     timeoutAlarmaToLuz.Update();
 
-    // Actualizar tareas
+    // Actualizar tareas de sensores y LED
     readDHTTask.Update();
     readLDRTask.Update();
     blinkAlarmaTask.Update();
     blinkAlertaTask.Update();
 
-    // Leer entrada
+    // Leer entrada del usuario
     if (input == Input::Unknown) {
         input = static_cast<Input>(readInput());
     }
 
-    // Actualizar máquina
+    // Actualizar máquina de estados
     stateMachine.Update();
 }
 
-// ======= Lectura serial de comandos =======
+// ======= Lectura de comandos seriales =======
 int readInput()
 {
     if (Serial.available())
@@ -216,10 +217,8 @@ int readInput()
         char c = Serial.read();
         switch (c)
         {
-            case 'H': return Input::H;
-            case 'A': return Input::A;
-            case 'L': return Input::L;
-            case 'B': return Input::B;
+            case 'A': return Input::A;  // Confirmar alerta
+            case 'B': return Input::B;  // Confirmar alarma
             default: return Input::Unknown;
         }
     }
