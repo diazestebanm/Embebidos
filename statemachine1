@@ -40,7 +40,7 @@ AsyncTask timeoutInicio(5000, false, []() { input = Input::Sign_Timeout; });
 AsyncTask timeoutMonThToLuz(7000, false, []() { input = Input::Sign_Timeout; });
 AsyncTask timeoutAlertaToMonTh(4000, false, []() { input = Input::Sign_Timeout; });
 AsyncTask timeoutMonLuzToTh(2000, false, []() { input = Input::Sign_Timeout; });
-AsyncTask timeoutAlarmaToLuz(5000, false, []() { input = Input::Sign_Timeout; });
+AsyncTask timeoutAlarmaToLuz(3000, false, []() { input = Input::Sign_Timeout; });
 
 // ======= Tareas de lectura =======
 AsyncTask readDHTTask(2000, false, []() {
@@ -134,7 +134,7 @@ void setupStateMachine()
 
     stateMachine.SetOnEntering(Alarma, []() {
         Serial.println("Estado: Alarma");
-        setTimeout(timeoutAlarmaToLuz, 5000);
+        setTimeout(timeoutAlarmaToLuz, 3000);
         blinkAlarmaTask.Start();
     });
 
