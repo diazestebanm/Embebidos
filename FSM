@@ -1,0 +1,338 @@
+// ================================================================
+// FSM 6 Estados — Arduino IDE (ESP32 WROOM-32)
+// Estilo Luis Llamas: StateMachine + AsyncTask
+// Sensor: DHT11 (Adafruit DHT sensor library)
+// SIN delays — AsyncTask maneja todos los retardos
+// ================================================================
+#include <StateMachineLib.h>
+#include <AsyncTaskLib.h>
+#include <DHT.h>
+
+// ─── PINES (seguros para ESP32 WROOM-32) ────────────────────────
+#define PIN_LED_VERDE  26
+#define PIN_LED_AZUL   27
+#define PIN_LED_ROJO   25
+#define PIN_BOTON      33   // INPUT_PULLUP, activo en LOW
+#define PIN_DHT        23
+#define PIN_LDR        34   // ADC1 input-only
+
+// ─── SENSOR DHT11 ───────────────────────────────────────────────
+#define TIPO_DHT DHT11
+DHT dht(PIN_DHT, TIPO_DHT);
+
+// ─── UMBRALES ───────────────────────────────────────────────────
+#define TEMP_UMBRAL_ALERTA  25.0f
+#define TEMP_UMBRAL_ALARMA  30.0f
+#define HUM_UMBRAL_MIN      60.0f
+#define LUZ_UMBRAL_MIN      60
+#define MAX_INTENTOS        3
+#define DEBOUNCE_MS         50UL
+
+// ─── ESTADOS ────────────────────────────────────────────────────
+enum State : uint8_t {
+  INICIO      = 0,
+  MON_TEMP    = 1,
+  MON_HUMEDAD = 2,
+  MON_LUZ     = 3,
+  ALERTA      = 4,
+  ALARMA      = 5
+};
+
+// ─── ENTRADAS ───────────────────────────────────────────────────
+enum Input : uint8_t {
+  NONE           = 0,
+  BTN_PRESS      = 1,
+  TEMP_ALTA      = 2,
+  TEMP_MUY_ALTA  = 3,
+  HUMEDAD_BAJA   = 4,
+  LUZ_BAJA       = 5,
+  TIMEOUT_2S     = 6,
+  TIMEOUT_3S     = 7,
+  TIMEOUT_4S     = 8,
+  TIMEOUT_5S     = 9,
+  TIMEOUT_ALERTA = 10
+};
+
+// ─── FSM ────────────────────────────────────────────────────────
+StateMachine maquina(6, 11);
+Input  input       = NONE;
+float  temperatura = 0.0f;
+float  humedad     = 0.0f;
+int    luzRaw      = 0;
+int    intentos    = 0;
+bool   rutaALuz    = false; // false=3s→HUMEDAD | true=5s→LUZ
+
+// ─── ASYNC TASKS: BLINKS ────────────────────────────────────────
+AsyncTask tareaVerdeOn (200, false, []() { digitalWrite(PIN_LED_VERDE, HIGH); });
+AsyncTask tareaVerdeOff(200, false, []() { digitalWrite(PIN_LED_VERDE, LOW);  });
+
+AsyncTask tareaAzulOn (500, false, []() { digitalWrite(PIN_LED_AZUL, HIGH); });
+AsyncTask tareaAzulOff(900, false, []() { digitalWrite(PIN_LED_AZUL, LOW);  });
+
+AsyncTask tareaRojoOn (100, false, []() { digitalWrite(PIN_LED_ROJO, HIGH); });
+AsyncTask tareaRojoOff(300, false, []() { digitalWrite(PIN_LED_ROJO, LOW);  });
+
+// ─── ASYNC TASKS: TIMEOUTS ──────────────────────────────────────
+AsyncTask timeout2s    (2000, false, []() { if (input == NONE) input = TIMEOUT_2S;     });
+AsyncTask timeout3s    (3000, false, []() { if (input == NONE) input = TIMEOUT_3S;     });
+AsyncTask timeout4s    (4000, false, []() { if (input == NONE) input = TIMEOUT_4S;     });
+AsyncTask timeout5s    (5000, false, []() { if (input == NONE) input = TIMEOUT_5S;     });
+AsyncTask timeoutAlerta(4000, false, []() { if (input == NONE) input = TIMEOUT_ALERTA; });
+
+// ═══════════════════════════════════════════════════════════════
+// FUNCIONES AUXILIARES
+// ═══════════════════════════════════════════════════════════════
+void apagarLeds() {
+  digitalWrite(PIN_LED_VERDE, LOW);
+  digitalWrite(PIN_LED_AZUL,  LOW);
+  digitalWrite(PIN_LED_ROJO,  LOW);
+}
+
+void detenerBlinks() {
+  tareaVerdeOn.Stop();  tareaVerdeOff.Stop();
+  tareaAzulOn.Stop();   tareaAzulOff.Stop();
+  tareaRojoOn.Stop();   tareaRojoOff.Stop();
+}
+
+bool leerDHT() {
+  float t = dht.readTemperature();
+  float h = dht.readHumidity();
+  if (isnan(t) || isnan(h)) {
+    Serial.println("[ERROR] DHT11 no responde");
+    return false;
+  }
+  temperatura = t;
+  humedad     = h;
+  return true;
+}
+
+// ─── LECTURA DE BOTÓN sin delay (debounce por millis) ────────────
+void readInput() {
+  static bool          btnAnteriorHigh = true;
+  static unsigned long btnPressTime    = 0;
+  static bool          esperaSoltar    = false;
+
+  if (input != NONE) return;
+
+  bool btnAhoraHigh = (digitalRead(PIN_BOTON) == HIGH);
+
+  if (esperaSoltar) {
+    if (btnAhoraHigh) esperaSoltar = false;
+    btnAnteriorHigh = btnAhoraHigh;
+    return;
+  }
+
+  if (!btnAhoraHigh && btnAnteriorHigh) {
+    btnPressTime = millis();
+  } else if (!btnAhoraHigh && !btnAnteriorHigh) {
+    if ((millis() - btnPressTime) >= DEBOUNCE_MS) {
+      input        = BTN_PRESS;
+      esperaSoltar = true;
+    }
+  }
+  btnAnteriorHigh = btnAhoraHigh;
+}
+
+// ─── UPDATE DE TODAS LAS TASKS ────────────────────────────────────
+void updateTasks() {
+  tareaVerdeOn.Update(tareaVerdeOff);
+  tareaVerdeOff.Update(tareaVerdeOn);
+
+  tareaAzulOn.Update(tareaAzulOff);
+  tareaAzulOff.Update(tareaAzulOn);
+
+  tareaRojoOn.Update(tareaRojoOff);
+  tareaRojoOff.Update(tareaRojoOn);
+
+  timeout2s.Update();
+  timeout3s.Update();
+  timeout4s.Update();
+  timeout5s.Update();
+  timeoutAlerta.Update();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CALLBACKS OnEntering / OnLeaving
+// ═══════════════════════════════════════════════════════════════
+
+// ── INICIO ───────────────────────────────────────────────────────
+void onEnterInicio() {
+  Serial.println("══ [INICIO] Verde 200/200ms | Presiona boton...");
+  intentos = 0;
+  rutaALuz = false;
+  apagarLeds();
+  tareaVerdeOn.Start();
+}
+void onLeaveInicio() {
+  detenerBlinks();
+  apagarLeds();
+}
+
+// ── MON_TEMP ─────────────────────────────────────────────────────
+void onEnterMonTemp() {
+  Serial.println("── [MON_TEMP] Leyendo temperatura...");
+  if (leerDHT()) {
+    Serial.print("   Temperatura: "); Serial.print(temperatura);
+    Serial.print("C | Humedad: ");    Serial.print(humedad);
+    Serial.println("%");
+    if (temperatura > TEMP_UMBRAL_ALERTA) {
+      Serial.println("   !Temp > 25C! -> ALERTA inmediata");
+      input = TEMP_ALTA;
+      return;
+    }
+  }
+  if (!rutaALuz) {
+    Serial.println("   Timeout 3s -> MON_HUMEDAD");
+    timeout3s.Start();
+  } else {
+    Serial.println("   Timeout 5s -> MON_LUZ");
+    timeout5s.Start();
+  }
+}
+void onLeaveMonTemp() {
+  timeout3s.Stop();
+  timeout5s.Stop();
+}
+
+// ── MON_HUMEDAD ───────────────────────────────────────────────────
+void onEnterMonHumedad() {
+  Serial.println("── [MON_HUMEDAD] Leyendo humedad...");
+  if (leerDHT()) {
+    Serial.print("   Humedad: "); Serial.print(humedad);
+    Serial.print("% | Temperatura: "); Serial.print(temperatura);
+    Serial.println("C");
+    if (humedad < HUM_UMBRAL_MIN) {
+      Serial.println("   !Humedad < 60%! -> ALERTA inmediata");
+      input = HUMEDAD_BAJA;
+      return;
+    }
+  }
+  timeout4s.Start();
+}
+void onLeaveMonHumedad() {
+  timeout4s.Stop();
+  rutaALuz = true;
+}
+
+// ── MON_LUZ ───────────────────────────────────────────────────────
+void onEnterMonLuz() {
+  luzRaw = analogRead(PIN_LDR);
+  Serial.print("── [MON_LUZ] Luz ADC: "); Serial.print(luzRaw);
+  Serial.println(" / 4095");
+  if (luzRaw < LUZ_UMBRAL_MIN) {
+    Serial.println("   !Luz < 60! -> ALERTA inmediata");
+    input = LUZ_BAJA;
+    return;
+  }
+  timeout2s.Start();
+}
+void onLeaveMonLuz() {
+  timeout2s.Stop();
+  rutaALuz = false;
+}
+
+// ── ALERTA ────────────────────────────────────────────────────────
+void onEnterAlerta() {
+  intentos++;
+  Serial.print("══ [ALERTA] Intento "); Serial.print(intentos);
+  Serial.print("/"); Serial.print(MAX_INTENTOS);
+  Serial.print(" | Temp: "); Serial.print(temperatura);
+  Serial.println("C");
+  apagarLeds();
+  tareaAzulOn.Start();
+
+  if (intentos >= MAX_INTENTOS && temperatura > TEMP_UMBRAL_ALARMA) {
+    Serial.println("   3 intentos + temp > 30C -> ALARMA");
+    input = TEMP_MUY_ALTA;
+    return;
+  }
+  timeoutAlerta.Start();
+}
+void onLeaveAlerta() {
+  detenerBlinks();
+  timeoutAlerta.Stop();
+  apagarLeds();
+  if (intentos >= MAX_INTENTOS && input != TEMP_MUY_ALTA) {
+    intentos = 0;
+    Serial.println("   3 alertas sin temp critica -> contador reseteado");
+  }
+}
+
+// ── ALARMA ────────────────────────────────────────────────────────
+void onEnterAlarma() {
+  Serial.println("══ [ALARMA] ALARMA ACTIVA! Rojo 100/300ms. Boton para resetear.");
+  apagarLeds();
+  tareaRojoOn.Start();
+}
+void onLeaveAlarma() {
+  detenerBlinks();
+  apagarLeds();
+  intentos = 0;
+  Serial.println("   Sistema reseteado desde ALARMA.");
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CONFIGURACIÓN DE LA FSM
+// ═══════════════════════════════════════════════════════════════
+void setupStateMachine() {
+  maquina.AddTransition(INICIO,      MON_TEMP,    []() { return input == BTN_PRESS;      });
+  maquina.AddTransition(MON_TEMP,    ALERTA,      []() { return input == TEMP_ALTA;      });
+  maquina.AddTransition(MON_TEMP,    MON_HUMEDAD, []() { return input == TIMEOUT_3S;     });
+  maquina.AddTransition(MON_TEMP,    MON_LUZ,     []() { return input == TIMEOUT_5S;     });
+  maquina.AddTransition(MON_HUMEDAD, ALERTA,      []() { return input == HUMEDAD_BAJA;   });
+  maquina.AddTransition(MON_HUMEDAD, MON_TEMP,    []() { return input == TIMEOUT_4S;     });
+  maquina.AddTransition(MON_LUZ,     ALERTA,      []() { return input == LUZ_BAJA;       });
+  maquina.AddTransition(MON_LUZ,     MON_TEMP,    []() { return input == TIMEOUT_2S;     });
+  maquina.AddTransition(ALERTA,      ALARMA,      []() { return input == TEMP_MUY_ALTA;  });
+  maquina.AddTransition(ALERTA,      MON_TEMP,    []() { return input == TIMEOUT_ALERTA; });
+  maquina.AddTransition(ALARMA,      INICIO,      []() { return input == BTN_PRESS;      });
+
+  maquina.SetOnEntering(INICIO,      onEnterInicio);
+  maquina.SetOnEntering(MON_TEMP,    onEnterMonTemp);
+  maquina.SetOnEntering(MON_HUMEDAD, onEnterMonHumedad);
+  maquina.SetOnEntering(MON_LUZ,     onEnterMonLuz);
+  maquina.SetOnEntering(ALERTA,      onEnterAlerta);
+  maquina.SetOnEntering(ALARMA,      onEnterAlarma);
+
+  maquina.SetOnLeaving(INICIO,       onLeaveInicio);
+  maquina.SetOnLeaving(MON_TEMP,     onLeaveMonTemp);
+  maquina.SetOnLeaving(MON_HUMEDAD,  onLeaveMonHumedad);
+  maquina.SetOnLeaving(MON_LUZ,      onLeaveMonLuz);
+  maquina.SetOnLeaving(ALERTA,       onLeaveAlerta);
+  maquina.SetOnLeaving(ALARMA,       onLeaveAlarma);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SETUP Y LOOP
+// ═══════════════════════════════════════════════════════════════
+void setup() {
+  Serial.begin(115200);
+  Serial.println("╔══════════════════════════════╗");
+  Serial.println("║   FSM 6 Estados — ESP32      ║");
+  Serial.println("╚══════════════════════════════╝");
+
+  pinMode(PIN_LED_VERDE, OUTPUT);
+  pinMode(PIN_LED_AZUL,  OUTPUT);
+  pinMode(PIN_LED_ROJO,  OUTPUT);
+  apagarLeds();
+
+  pinMode(PIN_BOTON, INPUT_PULLUP);
+
+  dht.begin();
+
+  setupStateMachine();
+  maquina.SetState(INICIO, false, true);
+}
+
+void loop() {
+  readInput();
+  updateTasks();
+
+  Input prevInput;
+  do {
+    prevInput = input;
+    maquina.Update();
+  } while (input != NONE && input != prevInput);
+
+  input = NONE;
+}
