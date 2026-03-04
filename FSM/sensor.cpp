@@ -40,5 +40,5 @@ void sensor_leerLuz(void) {
 }
 
 void sensor_leerFlama(void) {
-    flamaActiva = (digitalRead(PIN_FLAMA) == LOW);  // LOW = llama detectada
+    flamaActiva = (digitalRead(PIN_FLAMA) == HIGH);
 }
