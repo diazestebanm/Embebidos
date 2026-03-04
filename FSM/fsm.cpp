@@ -107,17 +107,16 @@ static void onLeaveMonHumedad(void) { timeoutHT.Stop(); }
 static void onEnterMonLuz(void) {
     _header("MON_LUZ");
     sensor_leerLuz();
-    sensor_leerFlama();
     char buf[36];
     snprintf(buf, sizeof(buf), "%4d / 4095 %s",
              luzRaw,
              luzRaw < LUZ_UMBRAL_MIN ? "[!! MUY ILUMINADO  ]" : "[OK poca luz        ]");
     _fila("Luz ADC : ", buf);
-    _fila("Flama   : ", flamaActiva ? "[!! DETECTADA]" : "[OK sin llama ]");
-    if (luzRaw < LUZ_UMBRAL_MIN || flamaActiva) {
+    if (luzRaw < LUZ_UMBRAL_MIN) {
         _fila("Sig.    : ", ">> ALERTA inmediata");
         _footer(); input = LUZ_BAJA; return;
     }
+
     _fila("Sig.    : ", "MON_TEMP en 5 s");
     _footer();
     timeout5s.Start();
